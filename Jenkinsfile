@@ -1,17 +1,13 @@
 pipeline {
     agent any
 
-    environment {
-        REPO_NAME = "devsecops-demo"
-    }
-
     stages {
 
         stage('Checkout') {
             steps {
-                checkout scm
-                sh 'echo "Repository checked out successfully"'
-                sh 'ls -la'
+                git branch: 'main',
+                    url: 'https://github.com/Davidsavlon/devsecops-demo.git'
+                sh 'echo "Repo cloned:" && ls -la'
             }
         }
 
@@ -23,50 +19,31 @@ pipeline {
                         echo " Claude Security Scanner"
                         echo "======================================"
 
-                        # Find all scannable files in this repo
-                        find . -type f \( \
-                            -name "*.py" -o \
-                            -name "*.js" -o \
-                            -name "*.ts" -o \
-                            -name "*.java" -o \
-                            -name "*.go" -o \
-                            -name "*.sh" -o \
-                            -name "*.sql" \
-                        \) \
-                        ! -path "./.git/*" \
-                        ! -path "./node_modules/*" \
-                        > /tmp/all_files.txt
+                        find . -type f -name "*.py" -not -path "./.git/*" > /tmp/files.txt
+                        find . -type f -name "*.js" -not -path "./.git/*" >> /tmp/files.txt
+                        find . -type f -name "*.ts" -not -path "./.git/*" >> /tmp/files.txt
+                        find . -type f -name "*.java" -not -path "./.git/*" >> /tmp/files.txt
+                        find . -type f -name "*.sh" -not -path "./.git/*" >> /tmp/files.txt
 
-                        echo "Files found to scan:"
-                        cat /tmp/all_files.txt
+                        echo "Files to scan:"
+                        cat /tmp/files.txt
                         echo ""
 
-                        # Scan each file
                         SCAN_FAILED=0
                         while IFS= read -r file; do
-                            echo "--------------------------------------"
-                            echo "Scanning: $file"
-                            echo "--------------------------------------"
-                            python3 /opt/claude_scanner.py "$file" \
-                                --api-key "$ANTHROPIC_API_KEY" \
-                                --severity MEDIUM \
-                                --fail-on HIGH \
-                                --verbose \
-                                --json-report "/tmp/scan-$(basename $file).json" \
-                                || SCAN_FAILED=1
+                            echo "--- Scanning: $file ---"
+                            python3 /opt/claude_scanner.py "$file" --api-key "$ANTHROPIC_API_KEY" --severity MEDIUM --fail-on HIGH --verbose || SCAN_FAILED=1
                             echo ""
-                        done < /tmp/all_files.txt
+                        done < /tmp/files.txt
 
                         echo "======================================"
-                        echo " Scan Complete"
-                        echo "======================================"
-
                         if [ $SCAN_FAILED -eq 1 ]; then
-                            echo "RESULT: FAILED - HIGH/CRITICAL issues found"
-                            echo "Fix the issues above before this build can proceed"
+                            echo " RESULT: FAILED - HIGH/CRITICAL issues found"
+                            echo "======================================"
                             exit 1
                         else
-                            echo "RESULT: PASSED - No blocking issues found"
+                            echo " RESULT: PASSED"
+                            echo "======================================"
                         fi
                     '''
                 }
@@ -77,14 +54,7 @@ pipeline {
             steps {
                 sh '''
                     echo "Running Gitleaks secrets scan..."
-                    docker run --rm \
-                        -v $(pwd):/repo \
-                        zricethezav/gitleaks:latest \
-                        detect \
-                        --source=/repo \
-                        --report-format=json \
-                        --report-path=/repo/gitleaks-report.json \
-                        --exit-code=0 2>/dev/null || true
+                    docker run --rm -v $(pwd):/repo zricethezav/gitleaks:latest detect --source=/repo --report-format=json --report-path=/repo/gitleaks-report.json --exit-code=0 2>/dev/null || true
                     echo "Secrets scan complete"
                 '''
             }
@@ -92,22 +62,16 @@ pipeline {
 
         stage('Build') {
             steps {
-                echo 'Build stage — add your build commands here'
+                echo 'Security passed — build stage reached!'
             }
         }
     }
 
     post {
-        success {
-            echo '✅ Pipeline PASSED — all security checks cleared'
-        }
-        failure {
-            echo '❌ Pipeline FAILED — security issues must be fixed'
-        }
+        success { echo 'ALL STAGES PASSED' }
+        failure { echo 'PIPELINE FAILED — security issues found' }
         always {
-            archiveArtifacts artifacts: '*.json',
-                            allowEmptyArchive: true
-            echo 'Pipeline finished'
+            archiveArtifacts artifacts: '*.json', allowEmptyArchive: true
         }
     }
 }
