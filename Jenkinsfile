@@ -75,3 +75,32 @@ pipeline {
         }
     }
 }
+stage('Secrets Scan') {
+    steps {
+        sh '''
+            echo "======================================"
+            echo " Stage 2: Gitleaks Secrets Scan"
+            echo "======================================"
+
+            docker run --rm \
+                -v $(pwd):/repo \
+                zricethezav/gitleaks:latest \
+                detect \
+                --source=/repo \
+                --report-format=json \
+                --report-path=/repo/gitleaks-report.json \
+                --exit-code=1
+
+            echo "No secrets found - PASSED"
+        '''
+    }
+    post {
+        always {
+            archiveArtifacts artifacts: 'gitleaks-report.json',
+                            allowEmptyArchive: true
+        }
+        failure {
+            echo 'SECRETS DETECTED - commit blocked!'
+        }
+    }
+}
