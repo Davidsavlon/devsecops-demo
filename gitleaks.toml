@@ -1,0 +1,11 @@
+title = "Gitleaks DevSecOps Config"
+
+[allowlist]
+  description = "Exclude generated report files and known false positives"
+  paths = [
+    '''trivy-report\.json''',
+    '''checkov-report\.json''',
+    '''gitleaks-report\.json''',
+    '''.*-report\.json''',
+    '''.*\.log'''
+  ]
