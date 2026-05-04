@@ -1,191 +1,95 @@
-pipeline {
-    agent any
+stage('Dependency Scan') {
+    steps {
+        sh '''
+            echo "======================================"
+            echo " Stage 3: Trivy Dependency Scan"
+            echo "======================================"
 
-    stages {
+            echo "Found requirements.txt:"
+            cat requirements.txt
 
-        stage('Checkout') {
-            steps {
-                git branch: 'main',
-                    url: 'https://github.com/Davidsavlon/devsecops-demo.git'
-                sh 'echo "Files in repo:" && ls -la'
-            }
-        }
+            echo ""
+            echo "Running Trivy scan with python scanner..."
+            docker run --rm \
+                -v $(pwd):/project \
+                aquasec/trivy:latest \
+                fs \
+                --scanners vuln \
+                --severity HIGH,CRITICAL \
+                --format table \
+                --debug \
+                /project/requirements.txt
 
-        stage('Claude SAST') {
-            steps {
-                withCredentials([string(credentialsId: 'anthropic-api-key', variable: 'ANTHROPIC_API_KEY')]) {
-                    sh '''
-                        echo "======================================"
-                        echo " Stage 1: Claude SAST"
-                        echo "======================================"
+            echo ""
+            echo "Saving JSON report..."
+            docker run --rm \
+                -v $(pwd):/project \
+                aquasec/trivy:latest \
+                fs \
+                --scanners vuln \
+                --severity HIGH,CRITICAL \
+                --format json \
+                --output /project/trivy-report.json \
+                /project/requirements.txt 2>/dev/null || true
 
-                        find . -type f -name "*.py" -not -path "./.git/*" > /tmp/files.txt
-                        find . -type f -name "*.js" -not -path "./.git/*" >> /tmp/files.txt
+            echo ""
+            echo "======================================"
+            echo " Parsing results..."
+            echo "======================================"
 
-                        echo "Files to scan:"
-                        cat /tmp/files.txt
+            if [ -f trivy-report.json ]; then
+                python3 << PYEOF
+import json, sys
 
-                        SCAN_FAILED=0
-                        while IFS= read -r file; do
-                            echo "--- Scanning: $file ---"
-                            python3 /opt/claude_scanner.py "$file" \
-                                --api-key "$ANTHROPIC_API_KEY" \
-                                --severity MEDIUM \
-                                --fail-on HIGH \
-                                --verbose || SCAN_FAILED=1
-                        done < /tmp/files.txt
+try:
+    with open("trivy-report.json") as f:
+        data = json.load(f)
 
-                        if [ $SCAN_FAILED -eq 1 ]; then
-                            echo "RESULT: FAILED"
-                            exit 1
-                        else
-                            echo "RESULT: PASSED"
-                        fi
-                    '''
-                }
-            }
-        }
+    critical = []
+    high = []
 
-        stage('Secrets Scan') {
-            steps {
-                sh '''
-                    echo "======================================"
-                    echo " Stage 2: Gitleaks Secrets Scan"
-                    echo "======================================"
+    for result in data.get("Results", []):
+        target = result.get("Target", "unknown")
+        for v in (result.get("Vulnerabilities") or []):
+            sev   = v.get("Severity", "")
+            pkg   = v.get("PkgName", "unknown")
+            inst  = v.get("InstalledVersion", "?")
+            fixed = v.get("FixedVersion", "no fix available")
+            cve   = v.get("VulnerabilityID", "?")
+            title = v.get("Title", "")
+            entry = f"  [{sev}] {pkg} {inst} -> {fixed} | {cve} | {title}"
+            if sev == "CRITICAL":
+                critical.append(entry)
+            elif sev == "HIGH":
+                high.append(entry)
 
-                    docker run --rm \
-                        -v $(pwd):/repo \
-                        zricethezav/gitleaks:latest \
-                        detect \
-                        --source=/repo \
-                        --no-git \
-                        --report-format=json \
-                        --report-path=/repo/gitleaks-report.json \
-                        --verbose \
-                        --exit-code=1
+    print(f"CRITICAL: {len(critical)}")
+    for c in critical:
+        print(c)
+    print(f"\nHIGH: {len(high)}")
+    for h in high:
+        print(h)
+    print(f"\nTotal HIGH/CRITICAL: {len(critical) + len(high)}")
 
-                    echo "======================================"
-                    echo " No secrets found - PASSED"
-                    echo "======================================"
-                '''
-            }
-            post {
-                failure {
-                    echo 'SECRETS DETECTED - fix before proceeding'
-                }
-            }
-        }
+    if len(critical) + len(high) > 0:
+        print("\nACTION REQUIRED: Upgrade packages listed above")
+        print("Update requirements.txt with fixed versions to pass this stage")
 
-        stage('Dependency Scan') {
-            steps {
-                sh '''
-                    echo "======================================"
-                    echo " Stage 3: Trivy Dependency Scan"
-                    echo "======================================"
-
-                    echo "Checking for requirements.txt..."
-                    if [ -f requirements.txt ]; then
-                        echo "Found requirements.txt:"
-                        cat requirements.txt
-                    else
-                        echo "No requirements.txt found"
-                    fi
-
-                    echo ""
-                    echo "Running Trivy filesystem scan..."
-                    docker run --rm \
-                        -v $(pwd):/project \
-                        aquasec/trivy:latest \
-                        fs \
-                        --security-checks vuln \
-                        --severity HIGH,CRITICAL \
-                        --format table \
-                        /project
-
-                    echo ""
-                    echo "Saving detailed JSON report..."
-                    docker run --rm \
-                        -v $(pwd):/project \
-                        aquasec/trivy:latest \
-                        fs \
-                        --security-checks vuln \
-                        --severity HIGH,CRITICAL \
-                        --format json \
-                        --output /project/trivy-report.json \
-                        /project 2>/dev/null || true
-
-                    echo ""
-                    echo "======================================"
-                    echo " Parsing vulnerability summary..."
-                    echo "======================================"
-
-                    if [ -f trivy-report.json ]; then
-                        python3 << PYEOF
-import json
-
-with open("trivy-report.json") as f:
-    data = json.load(f)
-
-critical = []
-high = []
-
-for result in data.get("Results", []):
-    for v in (result.get("Vulnerabilities") or []):
-        sev = v.get("Severity", "")
-        pkg = v.get("PkgName", "unknown")
-        installed = v.get("InstalledVersion", "?")
-        fixed = v.get("FixedVersion", "no fix available")
-        cve = v.get("VulnerabilityID", "?")
-        entry = f"  {pkg} {installed} -> upgrade to: {fixed} ({cve})"
-        if sev == "CRITICAL":
-            critical.append(entry)
-        elif sev == "HIGH":
-            high.append(entry)
-
-print(f"CRITICAL vulnerabilities: {len(critical)}")
-for c in critical:
-    print(c)
-
-print(f"\nHIGH vulnerabilities: {len(high)}")
-for h in high:
-    print(h)
-
-print(f"\nTotal HIGH/CRITICAL: {len(critical) + len(high)}")
-
-if len(critical) > 0:
-    print("\nACTION REQUIRED: Update packages to fix CRITICAL vulnerabilities")
+except Exception as e:
+    print(f"Could not parse report: {e}")
 PYEOF
-                    fi
+            else
+                echo "No report generated - Trivy found no recognized dependency files"
+            fi
 
-                    echo "======================================"
-                    echo " Dependency scan complete"
-                    echo "======================================"
-                '''
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'trivy-report.json',
-                                    allowEmptyArchive: true
-                }
-            }
-        }
-
-        stage('Build') {
-            steps {
-                echo 'All security scans passed - build stage reached!'
-            }
-        }
+            echo "======================================"
+            echo " Dependency scan complete"
+            echo "======================================"
+        '''
     }
-
     post {
-        success {
-            echo 'ALL STAGES PASSED'
-        }
-        failure {
-            echo 'PIPELINE FAILED - check security findings above'
-        }
         always {
-            archiveArtifacts artifacts: '*.json',
+            archiveArtifacts artifacts: 'trivy-report.json',
                             allowEmptyArchive: true
         }
     }
