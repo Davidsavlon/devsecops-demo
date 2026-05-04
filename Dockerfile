@@ -1,9 +1,9 @@
 FROM python:3.9-slim
 
-RUN apt-get update && apt-get install -y gcc libffi-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y gcc libffi-dev curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ .
-CMD ["python3", "main.py"]
+CMD ["python3", "server.py"]
